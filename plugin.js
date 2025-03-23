@@ -13481,7 +13481,7 @@
     Lampa.Storage.listener.follow('change', function (e) {
       if (e.name == 'filmix_token') {
         window.mod_filmix = {
-          max_qualitie: 1080,
+          max_qualitie: 720,
           is_max_qualitie: false
         };
         if (e.value) checkPro(e.value);else {
