@@ -4025,7 +4025,7 @@
 
       if (!window.mod_filmix) {
         window.mod_filmix = {
-          max_qualitie: 1080,
+          max_qualitie: 720,
           is_max_qualitie: false
         };
       }
