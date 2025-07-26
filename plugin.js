@@ -1,19 +1,17 @@
 (function() {
     'use strict';
 
-    // ================== Конфигурация ==================
-    const CACHE_TTL = 3600000; // 1 час кеширования (в мс)
+    // Конфигурация API-источников
     const sources = {
-        animelib: {
-            name: "AniLibria",
-            url: "https://api.anilibria.tv/v2/getTitle?code={shikimori_id}",
-            quality: ["1080p"],
-            shikimori: true
+        kodik: {
+            name: "Kodik",
+            url: "https://kodikapi.com/search?token=YOUR_TOKEN&kinopoisk_id={kp_id}&quality=4k",
+            quality: ["4k", "1080p", "720p"]
         },
-        openmovies: {
-            name: "OpenMovies",
-            url: "https://api.openmovies.ru/v1/movies?kp_id={kp_id}",
-            quality: ["4k", "1080p"]
+        videocdn: {
+            name: "VideoCDN",
+            url: "https://videocdn.tv/api/short?api_token=YOUR_TOKEN&kinopoisk_id={kp_id}&quality=2160p",
+            quality: ["2160p", "1080p"]
         },
         zetflix: {
             name: "Zetflix",
@@ -22,31 +20,23 @@
         }
     };
 
-    // ================== Кеширование ==================
-    const cache = {
-        get: (key) => {
-            const data = Lampa.Storage.get(`cache_${key}`);
-            if (data && Date.now() - data.timestamp < CACHE_TTL) return data.value;
-            return null;
-        },
-        set: (key, value) => {
-            Lampa.Storage.set(`cache_${key}`, {
-                value: value,
-                timestamp: Date.now()
-            });
-        }
-    };
+    // Генерация уникального ID пользователя
+    let userId = Lampa.Storage.get('lampa_user_id', '');
+    if (!userId) {
+        userId = Lampa.Utils.uid(12);
+        Lampa.Storage.set('lampa_user_id', userId);
+    }
 
-    // ================== Основные функции ==================
+    // Добавление кнопки "Смотреть онлайн" в интерфейс Lampa
     function addOnlineButton() {
         Lampa.Listener.follow('full', (e) => {
-            if (e.type === 'complete' && e.object.activity) { // Исправлено 'complite' на 'complete'
+            if (e.type === 'complite' && e.object.activity) {
                 const buttonHtml = `
                     <div class="full-start__button selector view--online_custom" data-subtitle="4K Online">
                         <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
                             <path d="M10 16.5l6-4.5-6-4.5v9zM12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/>
                         </svg>
-                        <span>Смотреть онлайн test</span>
+                        <span>Смотреть онлайн (4K)</span>
                     </div>
                 `;
 
@@ -55,264 +45,87 @@
                     launchOnlinePlayer(e.data.movie);
                 });
 
-                e.object.activity.render().find('.button--play').before(button);
+                if (Lampa.Storage.get('card_interface_type') === 'new') {
+                    e.object.activity.render().find('.button--play').before(button);
+                } else {
+                    e.object.activity.render().find('.view--torrent').before(button);
+                }
             }
         });
     }
 
-    // ================== Запуск плеера ==================
-    async function launchOnlinePlayer(movie) {
-        const kpId = movie.kinopoisk_id;
-        const imdbId = movie.imdb_id;
-        const shikimoriId = await getShikimoriId(movie.original_title);
-
-        if (!kpId && !imdbId && !shikimoriId) {
-            Lampa.Noty.show('Ошибка: Не найден ID для поиска');
+    // Запуск онлайн-плеера с выбором источника
+    function launchOnlinePlayer(movie) {
+        const kpId = movie.kinopoisk_id || movie.imdb_id;
+        if (!kpId) {
+            Lampa.Noty.show('Ошибка: Нет ID фильма (Kinopoisk/IMDb)');
             return;
         }
 
-        Lampa.Loading.show();
-        try {
-            const sourcesData = await fetchAllSources(kpId, imdbId, shikimoriId);
-            if (sourcesData.length > 0) {
-                showSourcesModal(sourcesData, movie);
-            } else {
-                Lampa.Noty.show('Не найдено доступных источников');
-            }
-        } catch (e) {
-            console.error('Ошибка загрузки источников:', e);
-            Lampa.Noty.show('Ошибка загрузки источников');
-        } finally {
-            Lampa.Loading.hide();
-        }
-    }
+        // Запрос к API источников
+        const requests = Object.keys(sources).map(source => {
+            const apiUrl = sources[source].url.replace('{kp_id}', kpId);
+            return Lampa.Utils.fetch(apiUrl)
+                .then(res => res.json())
+                .then(data => ({
+                    source: sources[source].name,
+                    quality: data.quality || 'unknown',
+                    links: data.links || []
+                }))
+                .catch(() => null);
+        });
 
-    // ================== Получение данных ==================
-    async function fetchAllSources(kpId, imdbId, shikimoriId) {
-        const requests = [];
-
-        for (const [key, source] of Object.entries(sources)) {
-            const cacheKey = `source_${key}_${kpId || imdbId || shikimoriId}`;
-            const cached = cache.get(cacheKey);
-            
-            if (cached) {
-                requests.push(Promise.resolve(cached)); // Обернуто в Promise.resolve для единообразия
-                continue;
+        // Обработка результатов
+        Promise.all(requests).then(results => {
+            const availableSources = results.filter(Boolean);
+            if (availableSources.length === 0) {
+                Lampa.Noty.show('Нет доступных источников в 4K');
+                return;
             }
 
-            let url = source.url;
-            if (source.shikimori && shikimoriId) {
-                url = url.replace('{shikimori_id}', shikimoriId);
-            } else if (kpId) {
-                url = url.replace('{kp_id}', kpId);
-            } else if (imdbId) {
-                url = url.replace('{kp_id}', imdbId);
-            } else {
-                continue;
-            }
-
-            requests.push(
-                Lampa.Utils.fetch(url)
-                    .then(res => {
-                        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-                        return res.json();
-                    })
-                    .then(data => {
-                        if (!data) throw new Error('Empty response');
-                        const result = {
-                            source: source.name,
-                            data: processSourceData(data, source, key), // Добавлен key как параметр
-                            key: key
-                        };
-                        cache.set(cacheKey, result);
-                        return result;
-                    })
-                    .catch((e) => {
-                        console.error(`Ошибка при загрузке источника ${source.name}:`, e);
-                        return null;
-                    })
-            );
-        }
-
-        return (await Promise.all(requests)).filter(Boolean);
-    }
-
-    function processSourceData(data, source, key) { // Добавлен параметр key
-        // Обработка разных форматов ответов API
-        if (key === 'animelib') {
-            return [{
-                url: data.player?.host || data.player?.url,
-                quality: source.quality[0],
-                voice: 'default'
-            }];
-        } else if (key === 'openmovies') {
-            return data.data?.map(item => ({
-                url: item.url,
-                quality: item.quality || 'unknown'
-            })) || [];
-        } else if (key === 'zetflix') {
-            return data.streams?.map(item => ({
-                url: item.url,
-                quality: item.quality
-            })) || [];
-        }
-        return [];
-    }
-
-    // ================== Показ модального окна ==================
-    function showSourcesModal(sourcesData, movie) {
-        let modalHtml = `
-            <div class="online-sources-modal">
-                <div class="modal__title">Выберите источник</div>
-                <div class="modal__subtitle">${movie.title}</div>
-                <div class="modal__content">
-        `;
-
-        sourcesData.forEach(source => {
-            if (!source.data || source.data.length === 0) return;
-
-            modalHtml += `
-                <div class="source-group">
-                    <h3>${source.source}</h3>
-                    <div class="source-options">
+            // Создание модального окна с выбором источника
+            const modalHtml = `
+                <div class="online-sources-modal">
+                    <div class="modal__title">Выберите источник (4K)</div>
+                    <div class="modal__content">
+                        ${availableSources.map(src => `
+                            <div class="source-selector selector" data-source="${src.source}">
+                                <span>${src.source}</span>
+                                <small>Качество: ${src.quality}</small>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
             `;
 
-            const voices = {};
-            source.data.forEach(item => {
-                const voiceKey = item.voice || 'default';
-                if (!voices[voiceKey]) voices[voiceKey] = [];
-                voices[voiceKey].push(item);
+            const modal = $(modalHtml);
+            modal.find('.source-selector').on('hover:enter', function() {
+                const sourceName = $(this).data('source');
+                const sourceData = availableSources.find(s => s.source === sourceName);
+                playMovie(sourceData.links[0]); // Берём первую ссылку (можно добавить выбор качества)
             });
 
-            Object.entries(voices).forEach(([voice, items]) => {
-                const voiceName = sources[source.key]?.voices?.[voice] || voice;
-                modalHtml += `
-                    <div class="voice-group">
-                        <h4>${voiceName}</h4>
-                        <div class="quality-options">
-                `;
-
-                items.forEach(item => {
-                    if (!item.url) return;
-                    modalHtml += `
-                        <div class="quality-option selector" 
-                             data-url="${encodeURIComponent(item.url)}" 
-                             data-quality="${item.quality || 'unknown'}">
-                            ${item.quality || 'Unknown'}
-                        </div>
-                    `;
-                });
-
-                modalHtml += `</div></div>`;
+            Lampa.Modal.open({
+                title: '4K Online',
+                html: modal,
+                onBack: () => Lampa.Modal.close()
             });
-
-            modalHtml += `</div></div>`;
-        });
-
-        modalHtml += `</div></div>`;
-
-        const modal = $(modalHtml);
-        modal.find('.quality-option').on('hover:enter', function() {
-            const url = decodeURIComponent($(this).data('url'));
-            const quality = $(this).data('quality');
-            playMovie(url, quality, movie.title);
-        });
-
-        Lampa.Modal.open({
-            title: 'Выбор источника',
-            html: modal,
-            width: 800,
-            onBack: () => Lampa.Modal.close()
         });
     }
 
-    // ================== Воспроизведение ==================
-    function playMovie(url, quality, title) {
-        if (!url) {
-            Lampa.Noty.show('Ошибка: Неверный URL для воспроизведения');
-            return;
-        }
-
+    // Воспроизведение видео
+    function playMovie(videoUrl) {
         Lampa.Player.play({
-            url: url,
-            title: `${title} (${quality})`,
-            quality: quality,
-            isonline: true,
-            headers: {
-                'Referer': 'https://example.com/',
-                'Origin': 'https://example.com/'
-            }
+            url: videoUrl,
+            title: 'Онлайн (4K)',
+            quality: '2160p',
+            isonline: true
         });
     }
 
-    // ================== Вспомогательные функции ==================
-    async function getShikimoriId(title) {
-        if (!title) return null;
-        const cacheKey = `shikimori_${title}`;
-        const cached = cache.get(cacheKey);
-        if (cached) return cached;
-
-        try {
-            const response = await Lampa.Utils.fetch(`https://shikimori.one/api/animes?search=${encodeURIComponent(title)}&limit=1`);
-            const data = await response.json();
-            if (data && data.length > 0) {
-                cache.set(cacheKey, data[0].id);
-                return data[0].id;
-            }
-        } catch (e) {
-            console.error('Shikimori API error:', e);
-        }
-        return null;
-    }
-
-    // ================== Инициализация ==================
-    if (!window.lampa_custom_online_plus) {
-        window.lampa_custom_online_plus = true;
+    // Инициализация плагина
+    if (!window.lampa_custom_online) {
+        window.lampa_custom_online = true;
         addOnlineButton();
-        
-        // Добавляем стили
-        const css = `
-            .online-sources-modal {
-                padding: 20px;
-                max-height: 70vh;
-                overflow-y: auto;
-                color: #fff;
-            }
-            .source-group {
-                margin-bottom: 20px;
-                background: rgba(255,255,255,0.1);
-                padding: 15px;
-                border-radius: 8px;
-            }
-            .voice-group {
-                margin: 10px 0;
-            }
-            .quality-options {
-                display: flex;
-                flex-wrap: wrap;
-                gap: 8px;
-                margin-top: 5px;
-            }
-            .quality-option {
-                padding: 8px 12px;
-                background: rgba(255,255,255,0.2);
-                border-radius: 4px;
-                cursor: pointer;
-                transition: background 0.2s;
-            }
-            .quality-option:hover, .quality-option.focus {
-                background: rgba(255,255,255,0.4);
-            }
-            .modal__title {
-                font-size: 1.5em;
-                margin-bottom: 10px;
-            }
-            .modal__subtitle {
-                font-size: 1.1em;
-                margin-bottom: 20px;
-                opacity: 0.8;
-            }
-        `;
-        $('head').append(`<style>${css}</style>`);
     }
 })();
