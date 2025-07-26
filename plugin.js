@@ -40,7 +40,7 @@
     // ================== Основные функции ==================
     function addOnlineButton() {
         Lampa.Listener.follow('full', (e) => {
-            if (e.type === 'complite' && e.object.activity) {
+            if (e.type === 'complete' && e.object.activity) { // Исправлено 'complite' на 'complete'
                 const buttonHtml = `
                     <div class="full-start__button selector view--online_custom" data-subtitle="4K Online">
                         <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
@@ -74,8 +74,13 @@
         Lampa.Loading.show();
         try {
             const sourcesData = await fetchAllSources(kpId, imdbId, shikimoriId);
-            showSourcesModal(sourcesData, movie);
+            if (sourcesData.length > 0) {
+                showSourcesModal(sourcesData, movie);
+            } else {
+                Lampa.Noty.show('Не найдено доступных источников');
+            }
         } catch (e) {
+            console.error('Ошибка загрузки источников:', e);
             Lampa.Noty.show('Ошибка загрузки источников');
         } finally {
             Lampa.Loading.hide();
@@ -91,7 +96,7 @@
             const cached = cache.get(cacheKey);
             
             if (cached) {
-                requests.push(cached);
+                requests.push(Promise.resolve(cached)); // Обернуто в Promise.resolve для единообразия
                 continue;
             }
 
@@ -108,38 +113,50 @@
 
             requests.push(
                 Lampa.Utils.fetch(url)
-                    .then(res => res.json())
+                    .then(res => {
+                        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+                        return res.json();
+                    })
                     .then(data => {
+                        if (!data) throw new Error('Empty response');
                         const result = {
                             source: source.name,
-                            data: processSourceData(data, source),
+                            data: processSourceData(data, source, key), // Добавлен key как параметр
                             key: key
                         };
                         cache.set(cacheKey, result);
                         return result;
                     })
-                    .catch(() => null)
+                    .catch((e) => {
+                        console.error(`Ошибка при загрузке источника ${source.name}:`, e);
+                        return null;
+                    })
             );
         }
 
         return (await Promise.all(requests)).filter(Boolean);
     }
 
-    function processSourceData(data, source) {
+    function processSourceData(data, source, key) { // Добавлен параметр key
         // Обработка разных форматов ответов API
-        if (source.key === 'kodik') {
-            return data.results.map(item => ({
-                url: item.link,
-                quality: item.quality,
-                voice: item.voice
-            }));
-        } else if (source.key === 'videocdn') {
-            return data.data.map(item => ({
-                url: item.iframe_src,
+        if (key === 'animelib') {
+            return [{
+                url: data.player?.host || data.player?.url,
+                quality: source.quality[0],
+                voice: 'default'
+            }];
+        } else if (key === 'openmovies') {
+            return data.data?.map(item => ({
+                url: item.url,
+                quality: item.quality || 'unknown'
+            })) || [];
+        } else if (key === 'zetflix') {
+            return data.streams?.map(item => ({
+                url: item.url,
                 quality: item.quality
-            }));
+            })) || [];
         }
-        return data;
+        return [];
     }
 
     // ================== Показ модального окна ==================
@@ -152,6 +169,8 @@
         `;
 
         sourcesData.forEach(source => {
+            if (!source.data || source.data.length === 0) return;
+
             modalHtml += `
                 <div class="source-group">
                     <h3>${source.source}</h3>
@@ -174,10 +193,11 @@
                 `;
 
                 items.forEach(item => {
+                    if (!item.url) return;
                     modalHtml += `
                         <div class="quality-option selector" 
-                             data-url="${item.url}" 
-                             data-quality="${item.quality}">
+                             data-url="${encodeURIComponent(item.url)}" 
+                             data-quality="${item.quality || 'unknown'}">
                             ${item.quality || 'Unknown'}
                         </div>
                     `;
@@ -193,7 +213,7 @@
 
         const modal = $(modalHtml);
         modal.find('.quality-option').on('hover:enter', function() {
-            const url = $(this).data('url');
+            const url = decodeURIComponent($(this).data('url'));
             const quality = $(this).data('quality');
             playMovie(url, quality, movie.title);
         });
@@ -208,6 +228,11 @@
 
     // ================== Воспроизведение ==================
     function playMovie(url, quality, title) {
+        if (!url) {
+            Lampa.Noty.show('Ошибка: Неверный URL для воспроизведения');
+            return;
+        }
+
         Lampa.Player.play({
             url: url,
             title: `${title} (${quality})`,
@@ -230,7 +255,7 @@
         try {
             const response = await Lampa.Utils.fetch(`https://shikimori.one/api/animes?search=${encodeURIComponent(title)}&limit=1`);
             const data = await response.json();
-            if (data.length > 0) {
+            if (data && data.length > 0) {
                 cache.set(cacheKey, data[0].id);
                 return data[0].id;
             }
@@ -251,6 +276,7 @@
                 padding: 20px;
                 max-height: 70vh;
                 overflow-y: auto;
+                color: #fff;
             }
             .source-group {
                 margin-bottom: 20px;
@@ -272,9 +298,19 @@
                 background: rgba(255,255,255,0.2);
                 border-radius: 4px;
                 cursor: pointer;
+                transition: background 0.2s;
             }
             .quality-option:hover, .quality-option.focus {
                 background: rgba(255,255,255,0.4);
+            }
+            .modal__title {
+                font-size: 1.5em;
+                margin-bottom: 10px;
+            }
+            .modal__subtitle {
+                font-size: 1.1em;
+                margin-bottom: 20px;
+                opacity: 0.8;
             }
         `;
         $('head').append(`<style>${css}</style>`);
