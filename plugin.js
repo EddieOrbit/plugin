@@ -11,17 +11,15 @@
     const CACHE_TTL = 3600000; // 1 час кеширования
     const PLUGIN_NAME = 'custom_online_plus';
     const sources = {
-        animelib: {
-            name: "AniLibria",
-            url: "https://api.anilibria.tv/v2/getTitle?code={shikimori_id}",
-            quality: ["1080p"],
-            shikimori: true
+        openmovies: {
+            name: "OpenMovies",
+            url: "https://api.openmovies.ru/v1/movies?kp_id={kp_id}",
+            quality: ["4k", "1080p"]
         },
-        kodik: {
-            name: "Kodik",
-            url: "https://kodikapi.com/search?token=YOUR_TOKEN&shikimori_id={shikimori_id}",
-            quality: ["1080p", "720p"],
-            shikimori: true
+        zetflix: {
+            name: "Zetflix",
+            url: "https://api.zetflix-internal.workers.dev/movies/{kp_id}?quality=ultrahd",
+            quality: ["ultrahd", "fullhd"]
         }
     };
 
@@ -65,7 +63,7 @@
                         <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
                             <path d="M10 16.5l6-4.5-6-4.5v9zM12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/>
                         </svg>
-                        <span>Смотреть онлайн</span>
+                        <span>Смотреть онлайн test</span>
                     </div>
                 `;
 
